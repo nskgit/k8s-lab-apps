@@ -1,0 +1,74 @@
+# ============================================================================
+# Pipeline 2, stage 1 — PR checks + build for services/hello-api ONLY.
+#
+# Monorepo pattern from day one: `paths:` filters mean a change to some
+# future services/other-api/ does NOT run this workflow.
+#
+# Runner: ubuntu-24.04-arm — free NATIVE ARM for public repos (D7). The
+# image we build runs unmodified on the ARM cluster; no QEMU anywhere.
+#
+# Deliberately NOT here yet (added as the next step, needs OCIR secrets):
+#   push job — buildx push to OCIR with tag = git SHA + Trivy scan,
+#   then the gitops tag-bump PR. Keeping stage 1 secret-free means the
+#   very first pipeline run on a public fork-able repo can be green.
+# ============================================================================
+name: hello-api CI
+
+on:
+  pull_request:
+    paths: ["services/hello-api/**", ".github/workflows/hello-api-ci.yml"]
+  push:
+    branches: [main]
+    paths: ["services/hello-api/**", ".github/workflows/hello-api-ci.yml"]
+
+defaults:
+  run:
+    working-directory: services/hello-api
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/hello-api/requirements-dev.txt
+      - name: Install deps
+        run: pip install -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Unit tests (pytest)
+        run: pytest -q
+
+  secret-scan:
+    runs-on: ubuntu-24.04-arm
+    defaults: { run: { working-directory: . } }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # gitleaks scans history, not just the tip
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    runs-on: ubuntu-24.04-arm
+    needs: [lint-test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker build (no push — PR stage never publishes)
+        run: |
+          docker build \
+            --build-arg APP_VERSION=${{ github.sha }} \
+            -t hello-api:${{ github.sha }} .
+      - name: Smoke — container answers /healthz
+        run: |
+          docker run -d --rm -p 8000:8000 --name smoke hello-api:${{ github.sha }}
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:8000/healthz && ok=1 && break || sleep 1
+          done
+          docker logs smoke
+          docker stop smoke
+          [ "${ok:-0}" = "1" ]
