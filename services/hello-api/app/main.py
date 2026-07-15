@@ -33,7 +33,7 @@ def root() -> dict:
         "host": socket.gethostname(),
     }
 
-
+# Health Status
 @app.get("/healthz")
 def healthz() -> dict:
     """Probe target — deliberately dependency-free: a probe must answer
