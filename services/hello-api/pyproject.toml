@@ -1,0 +1,6 @@
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.format]
+# black-compatible defaults; one tool now owns format + lint (ruff
+# replaced the black+pylint pair when the workflow moved to ruff).

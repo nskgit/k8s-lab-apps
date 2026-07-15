@@ -1,74 +1,247 @@
-# ============================================================================
-# Pipeline 2, stage 1 — PR checks + build for services/hello-api ONLY.
-#
-# Monorepo pattern from day one: `paths:` filters mean a change to some
-# future services/other-api/ does NOT run this workflow.
-#
-# Runner: ubuntu-24.04-arm — free NATIVE ARM for public repos (D7). The
-# image we build runs unmodified on the ARM cluster; no QEMU anywhere.
-#
-# Deliberately NOT here yet (added as the next step, needs OCIR secrets):
-#   push job — buildx push to OCIR with tag = git SHA + Trivy scan,
-#   then the gitops tag-bump PR. Keeping stage 1 secret-free means the
-#   very first pipeline run on a public fork-able repo can be green.
-# ============================================================================
 name: hello-api CI
+
+permissions:
+  contents: read
 
 on:
   pull_request:
-    paths: ["services/hello-api/**", ".github/workflows/hello-api-ci.yml"]
+    paths:
+      - "services/hello-api/**"
+      - ".github/workflows/hello-api-ci.yml"
+
   push:
-    branches: [main]
-    paths: ["services/hello-api/**", ".github/workflows/hello-api-ci.yml"]
+    branches:
+      - main
+    paths:
+      - "services/hello-api/**"
+      - ".github/workflows/hello-api-ci.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
     working-directory: services/hello-api
 
+env:
+  PYTHON_VERSION: "3.12"
+
 jobs:
-  lint-test:
+
+##########################################################################
+# QUALITY
+##########################################################################
+
+  quality:
+
     runs-on: ubuntu-24.04-arm
+
+    timeout-minutes: 10
+
     steps:
+
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: services/hello-api/requirements-dev.txt
-      - name: Install deps
-        run: pip install -r requirements-dev.txt
-      - name: Lint (ruff)
-        run: ruff check .
-      - name: Unit tests (pytest)
-        run: pytest -q
 
-  secret-scan:
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Format Check
+        run: ruff format --check .
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Dependency Scan
+        run: pip-audit
+
+##########################################################################
+# SECRET SCAN
+##########################################################################
+
+  secrets:
+
     runs-on: ubuntu-24.04-arm
-    defaults: { run: { working-directory: . } }
+
+    defaults:
+      run:
+        working-directory: .
+
     steps:
+
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0        # gitleaks scans history, not just the tip
+          fetch-depth: 0
+
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build:
+##########################################################################
+# UNIT TESTS
+##########################################################################
+
+  tests:
+
     runs-on: ubuntu-24.04-arm
-    needs: [lint-test]
+
+    timeout-minutes: 10
+
     steps:
+
       - uses: actions/checkout@v4
-      - name: Docker build (no push — PR stage never publishes)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: services/hello-api/requirements-dev.txt
+
+      - name: Install Dependencies
         run: |
-          docker build \
-            --build-arg APP_VERSION=${{ github.sha }} \
-            -t hello-api:${{ github.sha }} .
-      - name: Smoke — container answers /healthz
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run Tests
         run: |
-          docker run -d --rm -p 8000:8000 --name smoke hello-api:${{ github.sha }}
-          for i in $(seq 1 20); do
-            curl -sf http://127.0.0.1:8000/healthz && ok=1 && break || sleep 1
-          done
-          docker logs smoke
-          docker stop smoke
-          [ "${ok:-0}" = "1" ]
+          pytest \
+            --cov=app \
+            --cov-report=term \
+            --cov-report=xml \
+            --cov-fail-under=80
+
+##########################################################################
+# BUILD VALIDATION
+##########################################################################
+
+  build:
+
+    runs-on: ubuntu-24.04-arm
+
+    needs:
+      - quality
+      - tests
+
+    timeout-minutes: 20
+
+    steps:
+
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: services/hello-api
+          push: false
+          load: true
+          tags: hello-api:${{ github.sha }}
+
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Start Container
+        run: |
+          docker run -d \
+            --rm \
+            --name smoke \
+            -p 8000:8000 \
+            hello-api:${{ github.sha }}
+
+      - name: Health Check
+        run: |
+          timeout 30 bash -c '
+          until curl -sf http://127.0.0.1:8000/healthz
+          do
+            sleep 1
+          done'
+
+      - name: Verify Version
+        run: |
+          curl -s http://127.0.0.1:8000/ | grep "${{ github.sha }}"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker logs smoke || true
+          docker stop smoke || true
+
+##########################################################################
+# PUBLISH (MAIN ONLY)
+##########################################################################
+
+  publish:
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    needs:
+      - build
+      - secrets
+
+    runs-on: ubuntu-24.04-arm
+
+    env:
+      IMAGE: iad.ocir.io/idqz7bbbe34a/hello-api:${{ github.sha }}
+
+    steps:
+
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (local only — nothing leaves this VM yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: services/hello-api
+          push: false
+          load: true
+          tags: ${{ env.IMAGE }}
+          build-args: APP_VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Trivy Scan — the gate sits BEFORE the registry
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Login to OCIR
+        uses: docker/login-action@v3
+        with:
+          registry: iad.ocir.io
+          username: ${{ secrets.OCIR_USERNAME }}
+          password: ${{ secrets.OCIR_AUTH_TOKEN }}
+
+      - name: Push (scan passed — cache makes this instant)
+        id: build_push
+        uses: docker/build-push-action@v6
+        with:
+          context: services/hello-api
+          push: true
+          tags: ${{ env.IMAGE }}
+          build-args: APP_VERSION=${{ github.sha }}
+          cache-from: type=gha
+
+      - name: Image Digest (job-output pattern — stage 3 will consume this)
+        run: |
+          echo "Digest: ${{ steps.build_push.outputs.digest }}"
+

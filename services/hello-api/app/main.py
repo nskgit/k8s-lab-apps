@@ -25,6 +25,7 @@ app.mount("/metrics", make_asgi_app())
 
 @app.get("/")
 def root() -> dict:
+    """Identity + version + hostname — the rolling/canary demo readout."""
     REQUESTS.labels(path="/").inc()
     return {
         "service": "hello-api",
@@ -35,6 +36,7 @@ def root() -> dict:
 
 @app.get("/healthz")
 def healthz() -> dict:
-    # Deliberately dependency-free: a probe must answer even when
-    # everything downstream is on fire, or restarts make outages worse.
+    """Probe target — deliberately dependency-free: a probe must answer
+    even when everything downstream is on fire, or liveness restarts
+    turn a dependency outage into a restart storm."""
     return {"status": "ok"}
