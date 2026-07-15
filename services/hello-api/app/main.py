@@ -33,6 +33,7 @@ def root() -> dict:
         "host": socket.gethostname(),
     }
 
+
 # Health Status
 @app.get("/healthz")
 def healthz() -> dict:
