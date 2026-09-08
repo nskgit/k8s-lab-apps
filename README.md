@@ -9,7 +9,7 @@ No secrets ever live here; CI credentials are GitHub Actions secrets.
 
 | Repo | Holds | Can touch |
 |---|---|---|
-| **k8s-lab-apps** (this, public) | service code, Dockerfiles, per-service CI | OCIR (push images), gitops repo (PR a tag bump) — never the cloud, never the cluster |
+| **k8s-lab-apps** (this, public) | service code, Dockerfiles, per-service CI | OCIR (push images), gitops repo (direct-commit a tag bump; PR-mode at Phase 9/10) — never the cloud, never the cluster |
 | k8s-lab-gitops (private) | desired state Argo reconciles | the cluster, via Argo pull |
 | k8s-lab-infra (private) | Terraform + Ansible | the cloud + cluster substrate |
 
@@ -27,7 +27,8 @@ services/<name>/        one service = one folder = one Dockerfile = one CI workf
 
 PR → ruff · pytest · gitleaks · docker build (NO push)
 merge to main → buildx arm64 · tag = git SHA (immutable) · Trivy scan ·
-push OCIR → bump `workloads/` image tag in k8s-lab-gitops via PR → Argo
+push OCIR → bump `workloads/` image tag in k8s-lab-gitops via a direct
+commit to main (dev-grade; graduates to PR-mode at Phase 9/10) → Argo
 deploys dev. Promotion/prod & rollback happen in the gitops repo only.
 
 ## Services
