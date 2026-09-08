@@ -5,12 +5,12 @@
 # Layer-order lesson: requirements.txt copied BEFORE app/ so code changes
 # don't invalidate the (slow) dependency layer.
 # ============================================================================
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 WORKDIR /build
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 # Non-root from the start (PSA `restricted` will demand this at Phase 9).
 RUN useradd --uid 10001 --no-create-home appuser
 COPY --from=builder /install /usr/local
