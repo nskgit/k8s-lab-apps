@@ -1,0 +1,23 @@
+# Dependabot — supply-chain watcher.
+# Opens PRs when Python deps, the Dockerfile base image, or action pins
+# have updates/CVEs; those PRs flow through hello-api-ci like any human
+# change.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /services/hello-api
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /services/hello-api
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:                  # one weekly PR for all action bumps, not five
+        patterns: ["*"]
